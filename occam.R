@@ -1,6 +1,5 @@
 ## THE OCCAM PROJECT
-
-## Objective: build causal Bayesian Networks using observational data 
+## Objective: build causal Bayesian networks using observational data 
 
 library(abn)
 library(rstan)
@@ -8,13 +7,7 @@ library(MASS)
 library(binaryLogic)
 library(igraph)
 
-## Simulate a BN - 4 variables, all Gaussian process
-
-y1 = rnorm(100, 1, 1)
-y2 = 2 + 1 * y1 + rnorm(100, 0, 1) 
-y3 = 3 + 2 * y1 + rnorm(100, 0, 1) 
-y4 = 4 + 2 * y2 + 3 * y3 + rnorm(100, 0, 1) 
-
+## Toy: BN of 4 variables
 ## How many DAG in the space w/o interaction?
 ## Enumerate the DAG by factorizing JPD of model variables: (2^3)4 w/o DAG constrain
 
@@ -32,14 +25,9 @@ design.mat = lapply(design.vec, function(x) {
 ## DAG constrains
 
 design.dag.cons = sapply(design.mat, function(x) {
-  dag = F
-  if (sum(x) > 0 ) {
-    ind = which(x == 1, arr.ind = T)
-    ind.ord = apply(ind, 1, sort)
-    ind.ord.pas = apply(ind.ord, 2, function(x) paste(x, collapse = "-"))
-    if (! "TRUE" %in% names(table(duplicated(ind.ord.pas)))) dag = T
-  }
-  dag
+  io.only = which(rowSums(x) == 0 | colSums(x) == 0)
+  igraph = graph_from_adjacency_matrix(x, mode = "directed")
+  is.dag(igraph)
 })
 
 table(design.dag.cons)
@@ -52,37 +40,87 @@ design.mat.dag = design.mat[design.dag.cons]
 ## 3 ~ 0 + 1 + 2
 ## 4 ~ 0 + 1 + 2 + 3
 
-dag1 <- matrix(c(0, 1, 1, 1,  # 1 to 234
-                 0, 0, 1, 1,  # 2 to 34
-                 0, 0, 0, 1,  # 3 to 4
-                 0, 0, 0, 0   # 4 as final
-              ), byrow = T, nrow = 4)
+# V1: input only
+# V4: output only
 
-Y = rbind(y1, y2, y3, y4)
-y.stan = list(N = 100, K = 4, Y = Y, X = dag1)
+mydag <- matrix(c(0, 0, 0, 0, # input to V1
+                  1, 0, 0, 0, # input to V2
+                  1, 1, 0, 0, # input to V3
+                  1, 1, 1, 0  # input to V4
+               ), nrow = 4)
 
-file = "~/bitbucket/mydag/test.stan"
+mydag
+
+mydag.g = graph_from_adjacency_matrix(mydag, mode = "directed")
+plot(mydag.g)
+  
+## Simulate a BN - 4 variables, all Gaussian process
+
+set.seed(1)
+y1 = rnorm(100, 1, 1)
+y2 = y1 + rnorm(100, 0, 1) 
+y3 = y1 + y2 + rnorm(100, 0, 1) 
+y4 = y1 + y2 + y3 + rnorm(100, 0, 1) 
+
+Y = as.data.frame(cbind(y1, y2, y3, y4))
+y.stan = list(N = 100, K = 4, Y = Y, X = mydag)
+
+file = "~/bitbucket/mydag/gaussian.stan"
 mymodel = stan_model(file, model_name = "occam-1")
 
-## Maximal likelihood estimation
-xx = sapply(1:1e2, function(i) {
+## MLE/MAP
+
+fit.mle = optimizing(mymodel, data = y.stan)
+
+(est.alpha = fit.mle$par[grep("^alpha\\[", names(fit.mle$par))])
+(est.sigma = fit.mle$par[grep("^sigma\\[", names(fit.mle$par))])
+
+est.beta = fit.mle$par[grep("^beta\\[", names(fit.mle$par))]
+matrix(est.beta, nrow = 4)
+
+## Check likelihood probability 
+
+(est.lp = fit.mle$par[grep("^lp\\[", names(fit.mle$par))])
+sum(est.lp)
+fit.mle$value
+
+dnorm(y.stan$Y[1, 1], mean = est.alpha[1], sd = est.sigma[1], log = T)
+fit.mle$par["lp[1,1]"]
+
+## check the MLE performance
+
+fit.mle.dist <- sapply(1:1e2, function(i) {
   fit.mle = optimizing(mymodel, data = y.stan)
   fit.mle.par = fit.mle$par
   fit.mle.par.le = fit.mle.par[grep("^lp", names(fit.mle.par))]
   sum(fit.mle.par.le)
 })
 
-## MCMC
+summary(fit.mle.dist)
+
+## MCMC tryout
+
 fit.mcmc = sampling(mymodel, data = y.stan)
 
+## CI
+stan_plot(fit.mcmc, pars = "alpha")
+stan_plot(fit.mcmc, pars = "sigma")
+stan_plot(fit.mcmc, pars = "beta")
+
+## convergence
+stan_trace(fit.mcmc, pars = "alpha")
+stan_trace(fit.mcmc, pars = "sigma")
+stan_trace(fit.mcmc, pars = "beta")
+
 ## All DAG posterior lp
+
 init = list(alpha = rep(0, 4), sigma = rep(1, 4))
 dag.lp = sapply(1:length(design.mat.dag), function(x) { cat(x, "\n")
   y.stan$X = design.mat.dag[[x]]
   fit.mle = optimizing(mymodel, init = init, data = y.stan)
   fit.mle.par = fit.mle$par
-  fit.mle.par.le = fit.mle.par[grep("^lp", names(fit.mle.par))]
-  sum(fit.mle.par.le)
+  fit.mle.par.lp = fit.mle.par[grep("^lp", names(fit.mle.par))]
+  sum(fit.mle.par.lp)
 })
 
 ## BIC approximation
@@ -95,25 +133,22 @@ hist(dag.lp)
 hist(dag.bic)
 summary(dag.bic)
 
-## DAG
+## top DAG
 dag.stan = design.mat.dag[[which.min(dag.bic)]]
-
-dag.stan.ind = as.data.frame(which(dag.stan == 1, arr.ind = T))
-dag.igraph.dt = graph_from_data_frame(dag.stan.ind[c("col", "row")], directed = TRUE)
-plot(dag.igraph.dt)
+dag.stan.g = graph_from_adjacency_matrix(dag.stan, mode = "directed")
+plot(dag.stan.g) # looks good
 
 ## Comparison w the ABN package
 
-y.abn <- as.data.frame(cbind(y1, y2, y3, y4))
+y.abn <- Y
 dist.abn <- as.list(rep("gaussian", 4))
 max.par <- as.list(rep(4, 4))
 names(max.par) = names(dist.abn) = names(y.abn)
-ban <- matrix(rep(0, 4^2), byrow = T, nrow = 4)
+ban <- matrix(rep(0, 4^2), nrow = 4)
 rownames(ban) = colnames(ban) = names(y.abn)
-## build cache 
-mycache<-buildscorecache(data.df=y.abn, data.dists=dist.abn, dag.banned=ban, dag.retained=ban, max.parents=max.par); 
-## find the globally best DAG 
-mp.dag<-mostprobable(score.cache=mycache); 
-## plot the best model - requires Rgraphviz 
-myres<-fitabn(dag.m=mp.dag,data.df=y.abn,data.dists=dist.abn,create.graph=TRUE); 
-plot(myres$graph)
+mycache<-buildscorecache(data.df=y.abn, data.dists=dist.abn, dag.banned=ban, dag.retained=ban, max.parents=max.par)
+mp.dag<-mostprobable(score.cache=mycache) 
+myres<-fitabn(dag.m=mp.dag,data.df=y.abn,data.dists=dist.abn,create.graph=TRUE)
+plot(myres$graph) # ?
+
+## STAN results make more sense than ABN
