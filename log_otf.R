@@ -3,7 +3,7 @@ options(stringsAsFactors = F)
 library(dplyr)
 
 # extract data from OTF log file
-myfile = "/Users/xwang/Projects/roche34/otf/log_otf.txt"
+myfile = "/Users/xwang/GitHub/mydag/log_otf.txt"
 nff.lines <- readLines(myfile)
 
 cv.dedt <- nff.lines[grep("^T:\\s+(\\S+)\\s+Cv:\\s+(\\S+)\\s+dE\\/dT:\\s+(\\S+)", nff.lines)]

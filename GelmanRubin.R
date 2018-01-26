@@ -27,7 +27,7 @@ library(data.table)
 library(ggplot2)
 library(dplyr)
 
-dt = fread("~/Github/mydag/summ20_tab.txt", data.table = T)
+dt = fread("~/GitHub/mydag/summ20_tab.txt", data.table = T)
 dt$net = as.factor(dt$net)
 
 ggplot(dt, aes(x = t, y = BIC, color = net)) + geom_line(alpha=0.3) + theme(legend.position="none")
