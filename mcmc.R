@@ -2,47 +2,53 @@
 
 ## Objective: build causal Bayesian networks using observational data 
 
-library(abn)
-library(rstan)
-library(MASS)
-library(binaryLogic)
-library(igraph)
-
-set.seed(1)
-y1 = rnorm(100, 1, 1)
-y2 = y1 + rnorm(100, 0, 1) 
-y3 = y1 + y2 + rnorm(100, 0, 1) 
-y4 = y1 + y2 + y3 + rnorm(100, 0, 1) 
-
-Y = as.data.frame(cbind(y1, y2, y3, y4))
-y.stan = list(N = 100, K = 2, Y = Y$y4, X = Y[-c(1, 4)], Z = c(1, 1))
-
-y.stan$Z = c(1, 1)
-summary(lm(y4 ~ y2 + y3, data = Y))
-
-y.stan$Z = c(0, 1)
-summary(lm(y4 ~ y3, data = Y))
-
-file = "~/bitbucket/mydag/test.stan"
-mymodel = stan_model(file, model_name = "occam-1")
-
-fit.mle = optimizing(mymodel, data = y.stan)
-
-fit.mle$par["alpha"]
-(est.beta = fit.mle$par[grep("^beta\\[", names(fit.mle$par))])
-
-est.lp = fit.mle$par[grep("^lp\\[", names(fit.mle$par))]
-sum(est.lp)
-fit.mle$value
-
-dnorm(y.stan$Y[1], mean = fit.mle$par["alpha"] + sum(est.beta * y.stan$X[1, ]), sd = fit.mle$par["sigma"], log = T)
-fit.mle$par["lp[1]"]
-
 # structure mcmc
 
 # likelihood function: bayesian score
 
+file = "~/bitbucket/mydag/gaussian.stan"
+mymodel = stan_model(file, model_name = "occam-1")
+
+## mle/map
+
+fit.mle = optimizing(mymodel, data = y.stan)
+
+init = list(alpha = rep(0, 4), sigma = rep(1, 4))
+dag.lp = sapply(1:length(design.mat.dag), function(x) { cat(x, "\n")
+  y.stan$X = design.mat.dag[[x]]
+  fit.mle = optimizing(mymodel, init = init, data = y.stan)
+  fit.mle.par = fit.mle$par
+  fit.mle.par.lp = fit.mle.par[grep("^lp", names(fit.mle.par))]
+  sum(fit.mle.par.lp)
+})
+
+## bic approximation
+
+n = 4
+dag.k = sapply(design.mat.dag, sum)
+dag.bic = log(n) * dag.k - 2 * dag.lp
+
 # prior: neighborhood proximity
+
+design.vec = as.binary(x = (1:2^12 - 1), n = 12)
+
+design.mat = lapply(design.vec, function(x) {
+  y <- matrix(NA, ncol = 4, nrow = 4)
+  diag(y) = 0
+  y[lower.tri(y) | upper.tri(y)] = x
+  y
+})
+
+## dag constrains
+
+design.dag.cons = sapply(design.mat, function(x) {
+  io.only = which(rowSums(x) == 0 | colSums(x) == 0)
+  igraph = graph_from_adjacency_matrix(x, mode = "directed")
+  is.dag(igraph)
+})
+
+table(design.dag.cons)
+design.mat.dag = design.mat[design.dag.cons]
 
 # posterior 
 
