@@ -2,83 +2,100 @@
 
 ## Objective: build causal Bayesian networks using observational data 
 
-# structure mcmc
+library(dplyr)
+library(rstan)
+library(igraph)
+library(binaryLogic)
 
-# likelihood function: bayesian score
+# metropolis algorithm for structure inference
 
-file = "~/bitbucket/mydag/gaussian.stan"
+# 1. start from the null graph (no connection)
+# 2. choosing a new graph that is proximate to the old (neighborhood proximity, randomly pick an element and switch) 
+# 3. jumping to this new graph with a probability p(new)/p(old)
+
+# simulate a bn - 4 nodes, all Gaussian process
+
+set.seed(1)
+
+y1 = rnorm(100, 1, 1) # input only
+y2 = y1 + rnorm(100, 0, 1) # input-output
+y3 = y1 + y2 + rnorm(100, 0, 1) # input-output 
+y4 = y1 + y2 + y3 + rnorm(100, 0, 1) # output-only
+
+mydag <- matrix(c(0, 0, 0, 0, # input to V1
+                  1, 0, 0, 0, # input to V2
+                  1, 1, 0, 0, # input to V3
+                  1, 1, 1, 0  # input to V4
+), nrow = 4)
+
+mydag # true model
+mydag.g = graph_from_adjacency_matrix(mydag, mode = "directed")
+plot(mydag.g)
+
+# stan model to calculate joint probability (map)
+
+file = "~/GitHub/mydag/stan/gaussian.stan"
 mymodel = stan_model(file, model_name = "occam-1")
 
-## mle/map
-
-fit.mle = optimizing(mymodel, data = y.stan)
-
-init = list(alpha = rep(0, 4), sigma = rep(1, 4))
-dag.lp = sapply(1:length(design.mat.dag), function(x) { cat(x, "\n")
-  y.stan$X = design.mat.dag[[x]]
-  fit.mle = optimizing(mymodel, init = init, data = y.stan)
+mybic = function(dag) { # calculate bic score
+  data.stan$X = dag
+  fit.mle = optimizing(mymodel, init = init, data = data.stan)
   fit.mle.par = fit.mle$par
   fit.mle.par.lp = fit.mle.par[grep("^lp", names(fit.mle.par))]
-  sum(fit.mle.par.lp)
-})
-
-## bic approximation
-
-n = 4
-dag.k = sapply(design.mat.dag, sum)
-dag.bic = log(n) * dag.k - 2 * dag.lp
-
-# prior: neighborhood proximity
-
-design.vec = as.binary(x = (1:2^12 - 1), n = 12)
-
-design.mat = lapply(design.vec, function(x) {
-  y <- matrix(NA, ncol = 4, nrow = 4)
-  diag(y) = 0
-  y[lower.tri(y) | upper.tri(y)] = x
-  y
-})
-
-## dag constrains
-
-design.dag.cons = sapply(design.mat, function(x) {
-  io.only = which(rowSums(x) == 0 | colSums(x) == 0)
-  igraph = graph_from_adjacency_matrix(x, mode = "directed")
-  is.dag(igraph)
-})
-
-table(design.dag.cons)
-design.mat.dag = design.mat[design.dag.cons]
-
-# posterior 
-
-posterior <- function(param){
-  return (likelihood(param) + prior(param))
+  jp.map = sum(fit.mle.par.lp)
+  n = nrow(dag)
+  dag.k = sum(dag) # a bug?
+  bic = log(n) * dag.k - 2 * jp.map
+  bic
 }
+  
+x0 <- matrix(0, ncol = 4, nrow = 4) # design matrix
+y0 = as.data.frame(cbind(y1, y2, y3, y4)) # data matrix
+data.stan = list(N = 100, K = 4, Y = y0, X = x0)
 
-# metropolis algorithm
-# 1. starting at a random graph
-# 2. choosing a new graph that is proximate to the old 
-# 3. jumping to this new point with a probability p(new)/p(old), where p is the target function, and p>1 means jumping as well
+iter = 1e3 # iter number
+init = list(alpha = rep(0, 4), sigma = rep(1, 4))
 
-metropolis <- function(startvalue, iterations){
-  chain = array(dim = c(iterations+1, 3))
-  chain[1,] = startvalue
-  for (i in 1:iterations){
-    proposal = rnorm(3, mean = chain[i,], sd = c(0.5,0.1,0.3))
-    probab = exp(posterior(proposal) - posterior(chain[i,]))
+chain = list() # save dag and bic along the chain
+bic = mybic(x0)
+chain[[1]] = list(dag = x0, bic = bic)
+
+for(i in 1:iter) { # if (i %% 10 == 0) cat(i, "\n")
+  
+  repeat{ # propose a new dag in nbh
+    vec = c(dag[lower.tri(dag) | upper.tri(dag)])
+    vec.idx = sample(1:length(vec), 1)
+    vec[vec.idx] = 1 - vec[vec.idx]
     
-    if (runif(1) < probab) {
-      chain[i+1,] = proposal
-    } else {
-      chain[i+1,] = chain[i,]
-    }
+    dag_new = x0 
+    dag_new[lower.tri(dag_new) | upper.tri(dag_new)] = vec
+    
+    igraph = graph_from_adjacency_matrix(dag_new, mode = "directed")
+#   print(is.dag(igraph))
+    if(is.dag(igraph)) break
+  } # repeat
+  
+  bic_new = mybic(dag_new)
+  prob = exp(bic - bic_new)
+    
+  if (runif(1) < prob) {
+    dag = dag_new
+    bic = bic_new
+  } else {
+    dag = dag
+    bic = bic
   }
-  return(chain)
+  
+  chain[[i+1]] = list(dag = dag, bic = bic)
 }
 
-startvalue = c(0, 5, 10)
-chain = run_metropolis_MCMC(startvalue, 1e4)
+allbic = sapply(chain, function(x) x$bic)
 
-burnIn = 5e3
-acceptance = 1-mean(duplicated(chain[-(1:burnIn),]))
+plot(allbic)
+plot(allbic, ylim = c(1100, 1120))
+plot(allbic, xlim = c(900, 1000), ylim = c(1100, 1120))
+
+# mcmc quickly converged, found and trapped in the best dag
+# the best found dag was similar and simpler than the true model
+# more on bic approximation, maybe a bug
+# per netfrag or per dag penalty (k)?

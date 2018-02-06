@@ -1,8 +1,8 @@
 data {
-  int<lower=2> N; # sample number
-  int<lower=2> K; # variable number
-  vector[K] Y[N]; # data matrix
-  vector[K] X[K]; # design matrix
+  int<lower=2> N; // sample number
+  int<lower=2> K; // variable number
+  vector[K] Y[N]; // data matrix
+  vector[K] X[K]; // design matrix
 }
 
 parameters {
